@@ -1,0 +1,19 @@
+Package: SimGE
+Type: Package
+Title: Simulate genotyping errors
+Version: 0.1.0
+Authors@R: person("Jisca", "Huisman", email = "jisca.huisman@gmail.com",
+    role = c("aut", "cre"))
+Author: Jisca Huisman [aut, cre]
+Maintainer: Jisca Huisman <jisca.huisman@gmail.com>
+Description: This is a configure test.
+License: GPL-2
+Encoding: UTF-8
+LazyData: true
+Imports:
+    plyr (>= 1.8.0),
+    stats,
+    utils,
+    graphics
+RoxygenNote: 7.1.1
+NeedsCompilation: yes

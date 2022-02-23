@@ -1,0 +1,374 @@
+---
+title: "R + Fortran: How To"
+author: "J Huisman"
+date: "23 Februari 2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Background
+
+When working with large amounts of data, doing complex calculations, or running many simulation iterations, you may reach a point where running an R script becomes impractically time consuming. One possible solution is to run your R code on multiple cores, e.g. using package `parallel`. Another is to run part of the code in C or Fortran rather than R. 
+
+Translating some of your R code into a different computer language and getting that to actually work with R can seem (and sometimes be) a near insurmountable challenge. The tutorials I found often assume a decent amount of background knowledge and/or are linux specific; I hope to show here that also on a windows machine and with an average grasp of R it is possible to do some magic in Fortran. 
+
+Whether to use C or Fortran is mostly a matter of personal preference; I find Fortran easier to use. One example is array indexing: Fortran, like R, starts counting at 1, while C starts counting at 0. I've spent too many hours tracing back problems with C-to-R code that were caused by that small difference!
+
+
+### WARNING
+When comparing speed differences between alternative methods, you should take into account how much time you spend on writing the code, and on debugging it. When you are attempting to do something familiar in an unfamiliar programming language, everything takes many, many times longer. Whether that investment is worth it, depends on the time you eventually expect to save (and of course whether you wish to learn a new programming language!).
+
+
+<div style="background-color:lightblue"> 
+
+## Example
+Calculating all pairwise distances between two sets of map positions is a simple task, but one which is really time consuming when done in loops in R. When I could not come up with a neat and fast alternative way to do this in R, I wrote a small Fortran function. As I called this functions thousands of times with thousands of data points as part of a simulation, it changed total computation time from a few weeks to a few hours. 
+
+### Dummy data
+First, create two small dummy datasets with random numbers for the eastings and northings of points on a map. These small datasets help to quickly check that your functions are doing what they should. 
+
+```{r MakeData, class.source = 'bg-info', class.output = 'bg-info'}
+npA <- 100   # number of points
+npB <- 42
+LOC_A <- cbind(Easting = round(runif(npA, 0, 100), 1),
+                     Northing = round(runif(npA, 300, 500), 1))
+LOC_B <- cbind(Easting = round(runif(npB, -20, 150), 1),
+                     Northing = round(runif(npB, 350, 450), 1))
+
+par(mai=c(.9,.9,.2,.2), bg = 'lightcyan1')
+plot(LOC_A[, "Easting"], LOC_A[, "Northing"], pch=16,  # filled circles
+    xlim = c(-20, 150), ylim = c(300, 500), xlab = 'Easting', ylab = 'Northing')
+points(LOC_B[, "Easting"], LOC_B[, "Northing"], pch=1)  # open circles
+```
+
+Remember that the linear distance between two points, when you have the x- and y-coordinates of both, can be calculated using pythagoras' theorem: $a^2 + b^2 = c^2$, or here $Distance^2 = (Easting_a - Easting_b)^2 + (Northing_a - Northing_b)^2$. 
+
+
+
+### Option 1: For-loops in R
+
+We can first make a function that takes 2 points as input variables, each as a vector of length 2:
+
+```{r dist-func, class.source = 'bg-info'}
+distxy <- function(xx, yy) {
+  sqrt( (xx[1]-yy[1])^2 + (xx[2]-yy[2])^2 )
+}
+```
+
+And then loop over all possible combinations of rows in the two datasets
+
+```{r fun1-loop, class.source = 'bg-info'}
+calc_dist_1 <- function(LOC1, LOC2) {
+  # initiate a matrix to store the result in
+  DM <- matrix(NA, nrow(LOC1), nrow(LOC2))
+  
+  for (i in 1:nrow(LOC1)) {
+    for (j in 1:nrow(LOC2)) {
+      DM[i, j] <- distxy(LOC1[i,], LOC2[j,])
+    }
+  }
+  return( DM )
+}
+```
+
+When you only ever want to calculate distances within the same dataset, you can do it a bit smarter and halve the computational cost: the distance between point $i$ and $j$ is the same as between point $j$ and $i$, and the distance between $i$ and itself is zero.
+
+
+
+### Option 2: using inbuild R functions
+One possibility is to use `sapply` on a vector `1:nrow(LOC1)`, which works as your counter similar to the counter in a for-loop. Since you have 2 nested loops, you want 2 nested `sapply`'s:
+
+```{r sapply, class.source = 'bg-info'}
+
+calc_dist_2 <- function(LOC1, LOC2) {
+  
+  DM <- sapply(1:nrow(LOC1), function(i, 
+                                      LocA.M = LOC1, 
+                                      LocB.M = LOC2) {
+    sapply(1:nrow(LOC2), function(j, 
+                          LocA = LocA.M[i,], 
+                          LocB.M_copy = LocB.M) {
+      distxy(LocA, LocB.M_copy[j,])})
+  })
+  return( t(DM) )
+}
+```
+
+This is in my opinion not the easiest-readable or easily-maintainable code. The copy of `LOC2` / `LocB.M` is needed to avoid R getting confused and throwing an error that 'promise already under evaluation: recursive default argument reference or earlier problems?'. 
+
+Just a quick check that this does indeed give the same result as the nested for-loop:
+```{r check-1-2, class.source = 'bg-info', class.output = 'bg-info'}
+
+DistanceM_1 <- calc_dist_1(LOC_A, LOC_B)
+DistanceM_2 <- calc_dist_2(LOC_A, LOC_B)
+
+all(DistanceM_1 == DistanceM_2)
+```
+
+
+Other approaches are possible, but tricky. For example, `outer()` does not work with our `distxy` function:
+
+```{r, eval = FALSE, class.source = 'bg-info'}
+DM4 <- outer(1:nrow(LOC_A), 1:nrow(LOC_B),
+             function(i, j) distxy(LOC_A[i,], LOC_B[j,]))
+
+# Error in dim(robj) <- c(dX, dY) : 
+#   dims [product 4200] do not match the length of object [1]
+```
+</div>
+
+
+## Fortran basics
+There is lots of free documentation available online to get you started with the basics of Fortran. Covered here are only the bare essentials, and a few pointers to avoid common pitfalls.  
+
+
+### General
+One difference with R is that in Fortran you will always need to specify at the start of each function the type of each variable. The most common are:
+
+* Logical
+* Integer: whole numbers
+* Real: decimal numbers
+* Double precision: decimal numbers with double as many digits (use these to minimise rounding errors)
+* Character
+
+While this seems annoying at first, it prevents any ambiguity, and prevents a variable-name-with-a-typo becoming a new variable. 
+
+
+
+### Mini example
+
+<table>
+<tr>
+<th>R</th>
+<th>Fortran</th>
+</tr>
+<tr>
+<td>
+```r
+V <- numeric(length = 10)
+
+for (i in 1:10) {
+  if (i < 5) {
+    V[i] <- i + 100.342
+  } else {
+    V[i] <- i / sqrt(3)
+  }
+}
+```
+</td>
+<td>
+
+```f
+double precision :: V(10)
+integer :: i
+do i = 1, 10
+  if (i < 5) then
+    V(i) = i + 100.342
+  else
+    V(i) = dble(i) / sqrt(3)
+  endif
+enddo
+```
+
+</td>
+</tr>
+</table>
+
+Note that in contrast to R, Fortran is not case-sensitive. But just like R, Fortran does not care about indentation or other white space, and it follows similar rules regarding new lines. 
+
+One oddity of Fortran is that when dividing an integer by an integer, the result according to Fortran is also an integer, so `1/2 = 1`. However, if either variable is a real or double precision, the result is a decimal number: `1.0/2 = 0.5`. `dble()` converts the integer `i` to double precision. 
+
+
+<div style="background-color:lightblue"> 
+
+### Option 3: call Fortran
+While in R it is often considered bad practice to have loops-within-loops-within-loops, in Fortran (or C) it is the proper way to go. 
+
+```{fortran distance, eval=FALSE, class.source = 'bg-info'}
+subroutine distsF(E1, N1, L1, E2, N2, L2, DV)
+implicit none   ! do not forget this! the reason is from the olden days & silly 
+
+integer, intent(IN) :: L1, L2   ! length of E1,N1 and E2,N2 vectors resp.
+double precision, intent(IN) :: E1(L1), N1(L1), E2(L2), N2(L2)
+double precision, intent(INOUT) :: DV(L1 * L2)
+integer :: i, j
+
+do i=1,L1
+    do j=1, L2
+        DV((j-1)*L1 + i) = SQRT((E1(i) - E2(j))**2 + (N1(i) - N2(j))**2) 
+    enddo
+enddo
+
+end subroutine distsF
+```
+
+The Fortran code should be saved in a separate text file, with extension `.f` or `.f90`. 
+</div>
+
+
+
+### Compilation
+Fortran is a compiled language. Compilation turns the human-readable code you've written into a processor-understandable program, and does so in a way that optimises performance. The advantage of a 60-year-old language is that people have been tinkering with the compilation process for 60 years, and this is were a lot of the speed comes from. 
+
+There are various Fortran compilers available that will let you generate a stand-alone program that can be run from the command line, but here I'll focus on how to get it to work with R. 
+
+
+#### Windows
+All you need for compilation is **Rtools**, available from cran.r-project.org/bin/windows/Rtools/. 
+
+After installation, you'll need to add Rtools' location to your computer's PATH variable, so that you can use it on the command line without having to specify every time exactly where it is located. You can do this via `system properties` (search `settings` then `Advanced system settings > Environment variables > System variables > [double click on 'path']`), and add the address of `Rtools\bin` , `Rtools\mingw_32\bin` and `R\[version]\bin` to the other locations already there. Separate different addresses by a semicolon (;), no spaces. 
+
+Then, open command prompt (search `cmd`), and go to the directory in which your Fortran file is located. The argument to go to a folder is `cd` followed by the address, with `cd /D` you can go to a different drive (e.g. `cd /D E:\Other`), and with `cd ..` you go up a level. `ls` shows you the content of the folder you're in. 
+
+<div style="background-color:lightblue"> 
+Once you are in the right folder, compile your Fortran script:
+
+```{sh compile, eval=FALSE, class.source = 'bg-info'}
+R CMD SHLIB CalcDistance.f90
+```
+
+which gives R the command (`CMD`) to create a shared library (`SHLIB`): `CalcDistance.dll`. 
+</div>
+
+
+If you get the error `'R' is not recognized as an internal or external command, operable program or batch file.`, something is probably wrong with your PATH variable (or installation). After editing the path, close and re-open command prompt, and simply type `R` to see if it works - this ought to open up R within your command prompt. 
+
+
+#### Mac
+TODO
+
+#### Linux
+TODO
+
+
+
+#### Load into R
+After compiling your code (at the command line), your current R session does not automatically know that it exists and that you want to use it, you first need to load it (inside R).
+
+```{r, eval=FALSE, class.source = 'bg-info'}
+dyn.load("C:/path/to/CalcDistance.dll")
+```
+
+and then you can call it:
+
+```{r, eval=FALSE, class.source = 'bg-info'}
+TMP <- .Fortran("distsF",  # <-- name of your function in the fortran script
+                  E1 = as.double(LOC1[,1]),
+                  N1 = as.double(LOC1[,2]),
+                  L1 = as.integer(nrow(LOC1)),
+                  E2 = as.double(LOC2[,1]),
+                  N2 = as.double(LOC2[,2]),
+                  L2 = as.integer(nrow(LOC2)),
+                  DV = double(nrow(LOC1) * nrow(LOC2)))  # <-- output vector
+```
+
+Some things to note:
+
+- You cannot pass matrices or dataframes or so to Fortran, only vectors and single numbers.
+- No variables only come out of the Fortran call, they either go only IN, or they go in & then come back out after some modifications (INOUT). So, for the output, you need to provide an empty dummy vector of the same length and type.
+- You can in theory pass strings, but "the success of this is compiler-dependent: its use was formally deprecated in 2019" (https://cran.r-project.org/doc/manuals/r-release/R-exts.html#Interface-functions-_002eC-and-_002eFortran)
+- R's `NA`'s are considered strings by Fortran, not (missing) numbers. Thus, you need to either strip them before you pass the data to Fortran, or recode them (e.g. to a negative number when the rest is positive)
+- For packages, there are ways to automatically check that the variable names and types you specify in R match the names and types that your Fortran program expects (see end of this how-to). For 'loose' functions like this, it only considers the order in which variables are specified. Thus, you need to triple check that the variables in R and in Fortran line up correctly. 
+
+To make calling the Fortran bit easier, and to make sure that the variables do line up properly, it is customary to have a wrapper function in R around the call to Fortran:
+
+<div style="background-color:lightblue"> 
+
+```{r, class.source = 'bg-info'}
+calc_dist_3 <- function(LOC1, LOC2) {
+  
+  DM <- matrix(NA, nrow(LOC1), nrow(LOC2))
+  
+  # strip missing values
+  complete.1 <- !is.na(LOC1[,1]) & !is.na(LOC1[,2])
+  complete.2 <- !is.na(LOC2[,1]) & !is.na(LOC2[,2])
+  
+  LOC1 <- LOC1[complete.1, ]
+  LOC2 <- LOC2[complete.2, ]
+  
+  dyn.load( "CalcDistance.dll") 
+
+  TMP <- .Fortran("distsF",
+                  E1 = as.double(LOC1[,1]),
+                  N1 = as.double(LOC1[,2]),
+                  L1 = as.integer(nrow(LOC1)),
+                  
+                  E2 = as.double(LOC2[,1]),
+                  N2 = as.double(LOC2[,2]),
+                  L2 = as.integer(nrow(LOC2)),
+                  
+                  DV = double(nrow(LOC1) * nrow(LOC2))
+                  )
+  # the output TMP is a list, with each named element being a vector that was passed to/from Fortran
+                  
+  dyn.unload("CalcDistance.dll")
+  
+  # fold the output vector into the matrix. only fill up the neither-missing combinations
+  DM[outer(complete.1, complete.2, "&")] <- TMP$DV
+  return( DM )
+}
+```
+
+It is not strictly necessary to load/unload the dll every time you run the function; you could just load once at the start at the session & unload it automatically when you close R. However, some bugs may cause data from one run to spill over into the next run, and this is a fool proof way to circumvent those (although obviously you should try to fix those bugs if this happens). 
+
+Double check that we have the same results again:
+
+```{r check-1-3, class.source = 'bg-info', class.output = 'bg-info'}
+
+DistanceM_3 <- calc_dist_3(LOC_A, LOC_B)
+# Note that you can call this Fortran wrapper function like any other function.
+
+all(DistanceM_1 - DistanceM_3 < 1e-10)  
+# some small differences may occur due to differences in rounding
+```
+
+</div>
+
+
+
+
+
+
+### Speed difference
+
+<div style="background-color:lightblue"> 
+For a proper test, let's create some larger datasets
+
+```{r, class.source = 'bg-info', class.output = 'bg-info'}
+npA <- 2000   
+npB <- 666
+XL_A <- cbind(Easting = round(runif(npA, 0, 100), 1),
+                     Northing = round(runif(npA, 300, 500), 1))
+XL_B <- cbind(Easting = round(runif(npB, -20, 150), 1),
+                     Northing = round(runif(npB, 350, 450), 1))
+```
+
+
+```{r runtimes, class.source = 'bg-info', class.output = 'bg-info'}
+system.time( DM_XL_1 <- calc_dist_1(XL_A, XL_B) )
+system.time( DM_XL_2 <- calc_dist_2(XL_A, XL_B) )
+system.time( DM_XL_3 <- calc_dist_3(XL_A, XL_B) )
+```
+
+</div>
+
+Thus, even for this moderate number of points and a simple calculation, the difference is between a slightly annoying several-second wait for the loops in R, and a near-instantaneous result for the loops in Fortran. For larger numbers of points, the computational time in R quickly becomes minutes to hours, compared to mere seconds in Fortran. 
+
+Also note that the complicated `sapply()` tangle in `calc_dist_2()` is even slower than the simple loop in R in `calc_dist_1()`!
+
+
+
+## Within an R package
+
+An example of how things can be wrapped into a package can be found in `SimGE`, which calls Fortran to  `Sim`ulate `G`enotyping `E`rrors in a matrix with genotype data. It contains two R functions which are part of the `sequoia` package, but does not depend in any way on that package.
+
+An important file is `init.c` in the `/src` directory. This C file specifies the names and the types of the vectors that are passed between R and Fortran, and is required to get the package on CRAN. Details can be found at https://cran.r-project.org/doc/manuals/r-release/R-exts.html#Converting-a-package-to-use-registration . 
+
+
+### Messages from Fortran to R
+
+To pass warnings, notes, counters, or other messages while running the Fortran code to the R console, you can use `intpr` and `dblepr` ( https://cran.r-project.org/doc/manuals/r-release/R-exts.html#Printing) . To exit Fortran and return control to R after e.g. an error, use `rexit` (https://cran.r-project.org/doc/manuals/r-release/R-exts.html#Error-signaling). 

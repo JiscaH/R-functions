@@ -1,0 +1,158 @@
+---
+dummy_settings:  !r options(shiny.maxRequestSize = 30*1024^2)
+params:
+  reportnumber: 42
+  In_file: 
+    label: Choose input data file
+    value: 'nofile'
+    input: file
+  Out_folder: 
+    label: Specify folder for output ('.' = current directory)
+    value: '.'
+    input: text
+  Product:
+    label: Choose product
+    value: Pear
+    input: radio
+    choices: [Apple, Pear, Banana, Mango]
+  Out_filename:
+    label: Specify filename for results
+    value: !r paste0("Results_<Product>_", Sys.Date(), ".csv")
+    input: text
+title: "`r paste(params$Product, 'report number', params$reportnumber)`"
+---
+
+```{r, echo = FALSE}
+SomeOtherNumber <- as.numeric(params$reportnumber) -3
+```
+
+---
+subtitle: "`r paste('The number three reports back was', SomeOtherNumber)`"
+output: 
+  html_document: default
+---
+
+## Background
+For many people the mere idea of writing and editing scripts can be a large hurdle to interact with R programs. The `shiny` R package (https://shiny.rstudio.com/ and its derivatives offer a versatile way to create clickable interface to R. 
+
+`shiny` can be used in conjunction with R markdown in the form of paramaterised reports (https://bookdown.org/yihui/rmarkdown/parameterized-reports.html), via `params:` in the YAML header. When opening a Rmd file with `params:` in Rstudio, the user is automatically prompted to install `shiny`. After doing so, the option 'knit with parameters' is added to the knit menu (the small down arrow next to the 'Knit' button). When this option is chosen, a pop-up window to choose the parameters with which to run the report appears. 
+
+The name of the resulting report would be one obvious thing to be specifiable by a user this way. However, `knitr()` has no easy default way to change the folder/filename of the report that is generated. The solution illustrated here is to not actually knit in a different directory or under a different name, but rather to rename and move the just-created report at the very last moment (`.Last`).
+
+Note that an Rmd file can also be knitted from within a different R script, this allows one to both specify the parameters and the report name.  
+
+
+## Renaming & moving the report
+
+```{r rename-output}
+new_filename <- paste0('Fruit_report_', params$Product, '_', Sys.Date(), '.html')
+new_filepath <- normalizePath( file.path(params$Out_folder, new_filename), mustWork = FALSE)  
+
+outdir <- dirname(new_filepath)  
+if (dir.exists(outdir) == FALSE) {  # directory does not exist
+  stop('specified output folder could not be found; use dir.create() first', call.=FALSE)
+  # TODO: check for writing access with file.access() 
+}
+
+# note that .Last() is executed somewhere / by something that cannot access params or 
+# current_input(), so copy them to regular variables first (which can be accessed)
+current_filename <- knitr::current_input(dir = TRUE)
+#  Note: it does not work when running code chunk-by-chunk (`interactive() == TRUE`), 
+# because I haven't figured out yet how to get name of current file  (and thus 
+# of the output file) in that case.
+
+.Last <- function() {
+  
+  file.rename(from = gsub('.rmd$', '.html', current_filename, ignore.case=TRUE),
+              to = new_filepath)
+  message('Report renamed to: ', new_filepath)
+  
+  # open the html report (not automatic after renaming)
+  Sys.sleep(.1)  # give renaming a bit of time first
+  viewer <- getOption("viewer", default = utils::browseURL)
+  viewer(new_filepath)   
+}
+```
+
+Note that it currently only works when knitting to html, but it should (in theory) be possible to use the same trick with pdf and word documents. 
+
+
+Another trick that may come in handy is that you can access the variables in the (first) YAML chunk like this:
+```{r}
+names(rmarkdown::metadata)
+```
+
+
+
+## Dynamic report title
+The trick to include any values specified via `params:` in the title, is to have `title:` *after* `params:` in the YAML header. In addition, the YAML header can be subdivided into several parts, with code chunks in between. 
+
+
+
+## Data input & output
+
+Include an overview of the input & output files in the report
+```{r params-table}
+out_datafile <- params$Out_filename
+if (grepl('<Product>', out_datafile)) {
+  out_datafile <- gsub('<Product>', params$Product, out_datafile)
+}
+
+library(kableExtra)
+paramtbl <- matrix(c('Date', as.character(Sys.Date()),
+                     'Product', params$Product,
+                     'Data Input file', params$In_file,
+                     'Data Output file', file.path( outdir, out_datafile ),
+                     'R markdown file', current_filename,
+                     'Report file', new_filepath
+                     ),
+                   ncol=2, byrow=TRUE)
+
+kable(paramtbl, row.names=FALSE, col.names=c('','')) %>%
+  kable_classic() %>%
+  column_spec(1, bold=TRUE, width='10em') %>%
+  column_spec(2, monospace=TRUE)
+```
+
+
+Read in the specified data file.
+
+```{r, eval = FALSE}
+d.IN <- read.csv(params$In_file)
+```
+
+Note that when choosing `input: file` in the YAML header, it allows one to handily browse to and select the right file. However, the file is also automatically loaded, and the default maximum file size for this is 5MB. `options(shiny.maxRequestSize = 30*1024^2)` increases this to 30MB, but needs to be run before the file is selected -- this is why it is included at the top of the YAML header, under the fake item `dummy_settings`. 
+
+
+
+(but here we'll just make up some data)
+```{r}
+d.IN <- data.frame(fruit = sample(c('Apple', 'Pear', 'Banana', 'Mango'), 100, replace=TRUE),
+                   color = sample(c('green', 'yellow'), 100, replace=TRUE),
+                   weight = rnorm(100, mean = 60, sd = 10) )
+```
+
+
+Subset the data for this report
+```{r}
+d <- d.IN[d.IN$fruit == params$Product, ]
+```
+
+
+Do some calculations etc.
+```{r}
+meanweight <- tapply(d$weight, d$color, mean)
+```
+
+
+Write copy of results to a csv file
+```{r}
+write.csv(as.data.frame(meanweight), file.path( outdir, out_datafile ), row.names=TRUE)
+```
+
+
+\
+\
+And this concludes this short example report. 
+\
+\
